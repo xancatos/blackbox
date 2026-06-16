@@ -12,6 +12,14 @@ supplies the digits victim/surrogate and prints the comparison tables.
 
 Run:  uv run lineage.py
 For the higher-dimensional, paper-shaped version see cifar_lineage.py.
+
+New to ML? Read the PRIMER blocks at the top of attacks.py (attack ideas) and
+cifar_lineage.py (models, gradients, training). In short: a "model" maps an image
+to a class; a "gradient" is the pixel-direction that makes the model more wrong
+(the adversarial direction); "hard-label" means the victim returns only the class,
+not its confidence. This file uses sklearn's MLPClassifier -- a small neural
+network -- as both the victim and the surrogate, on 8x8 images of handwritten
+digits (so each image is just 64 numbers).
 """
 import numpy as np
 from sklearn.datasets import load_digits
@@ -45,15 +53,31 @@ def build_surrogate(frac=1.0, hidden=96, seed=7, label_noise=0.0):
 
 
 def mlp_sgrad(surr):
-    """Analytic d(cross-entropy)/d(input) for a one-hidden-layer ReLU MLP, unit."""
-    W1, W2 = surr.coefs_; b1, b2 = surr.intercepts_
+    """The surrogate's INPUT GRADIENT, computed by hand (cifar_lineage.py gets the
+    same thing from PyTorch autograd; here the network is simple enough to write
+    the calculus out, which is also a nice way to see what autograd does for you).
+
+    The surrogate is a one-hidden-layer network:
+        a1 = x.W1 + b1     (first linear layer)
+        h  = relu(a1)      (keep positives, zero the rest)
+        a2 = h.W2 + b2     (second linear layer -> one score per class)
+        p  = softmax(a2)   (turn scores into probabilities summing to 1)
+    The loss is "-log(p[true class])" (cross-entropy). We want d(loss)/d(x): the
+    direction in PIXEL space that most raises the loss = the adversarial direction.
+    Working backwards through the layers (the "chain rule" / backpropagation):
+        d(loss)/d(a2) = p - onehot(y0)          # probabilities minus the ideal answer
+        d(loss)/d(h)  = that . W2^T
+        d(loss)/d(a1) = times (a1 > 0)          # relu only passes gradient where active
+        d(loss)/d(x)  = that . W1^T
+    Returned as a unit vector (length 1), so only the direction matters."""
+    W1, W2 = surr.coefs_; b1, b2 = surr.intercepts_      # the trained weights/biases
     def sgrad(x, y0):
-        a1 = x @ W1 + b1; h = np.maximum(a1, 0.0); a2 = h @ W2 + b2
-        p = np.exp(a2 - a2.max()); p /= p.sum()
-        onehot = np.zeros_like(p); onehot[y0] = 1.0
-        g = (((p - onehot) @ W2.T) * (a1 > 0)) @ W1.T
+        a1 = x @ W1 + b1; h = np.maximum(a1, 0.0); a2 = h @ W2 + b2   # forward pass
+        p = np.exp(a2 - a2.max()); p /= p.sum()                       # softmax (probabilities)
+        onehot = np.zeros_like(p); onehot[y0] = 1.0                   # ideal answer for true class
+        g = (((p - onehot) @ W2.T) * (a1 > 0)) @ W1.T                 # backprop to the input
         n = np.linalg.norm(g)
-        return g / n if n else g
+        return g / n if n else g                                      # unit direction
     return sgrad
 
 

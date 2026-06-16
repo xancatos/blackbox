@@ -14,6 +14,26 @@ So `lineage.py` (sklearn MLP on digits) and `cifar_lineage.py` (PyTorch CNN on
 CIFAR-10) reuse this file unchanged -- only their `ctx` differs.
 
 See README.md for the full per-rung paper mapping and the SQBA alignment notes.
+
+----------------------------------------------------------------------------
+PRIMER FOR NEWCOMERS -- the few ideas every attack here is built on:
+* A classifier carves the space of all possible images into regions, one per
+  class. The surface separating two classes is the DECISION BOUNDARY. An image
+  is "adversarial" if a tiny move pushes it across that boundary into the wrong
+  region while still looking unchanged to a human.
+* "HARD LABEL" / "decision-based": the victim tells us ONLY which region an image
+  landed in (the class), not how confident it was. So our only feedback is the
+  yes/no question is_adv(x): "did the label change?". Everything below is a clever
+  way to find the closest boundary using only that yes/no signal.
+* A GRADIENT is the direction (a vector over the pixels) that changes a model's
+  loss fastest -- effectively "which way is the boundary?". We can't get the
+  victim's gradient (it's a black box), so SQBA borrows one from a SURROGATE
+  model we built ourselves (ctx.sgrad). That borrowed direction is what makes it
+  fast. Attacks that lack a surrogate must instead ESTIMATE the boundary
+  direction by probing the victim many times, which costs many queries.
+* "victim queries" (ctx.q) is the cost we are minimising: every call to the real
+  victim. The whole game is: flip the label with the fewest queries.
+----------------------------------------------------------------------------
 """
 import numpy as np
 
