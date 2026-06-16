@@ -1,32 +1,35 @@
 # Black-box adversarial attack lineage → SQBA
 
-A single, CPU-only Python script ([`lineage.py`](./lineage.py)) that implements
-**eleven adversarial attacks** on the same victim model and the same image, so
-you can read the history of black-box adversarial attacks as one table — from
-the simplest blind baseline up to **SQBA** — *Small-Query Black-Box Attack*, from
-"Hard-label based Small Query Black-box Adversarial Attack", Jeonghwan Park, Paul
-Miller & Niall McLaughlin (Queen's University Belfast), WACV 2024. The paper
-reports SQBA reaching **~5× higher attack success rate** than the benchmarks at
-small query budgets (100, 250). The paper is open-access on the
-[CVF site](https://openaccess.thecvf.com/content/WACV2024/papers/Park_Hard-Label_Based_Small_Query_Black-Box_Adversarial_Attack_WACV_2024_paper.pdf).
+CPU-only, from-scratch implementations of **eleven black-box adversarial attacks**
+run on one hard-label victim, so you can read the history of the field as a single
+table — from the simplest blind baseline up to **SQBA** — *Small-Query Black-Box
+Attack*, from "Hard-label based Small Query Black-box Adversarial Attack",
+Jeonghwan Park, Paul Miller & Niall McLaughlin (Queen's University Belfast),
+WACV 2024 ([open-access PDF](https://openaccess.thecvf.com/content/WACV2024/papers/Park_Hard-Label_Based_Small_Query_Black-Box_Adversarial_Attack_WACV_2024_paper.pdf)).
+The paper reports SQBA reaching **~5× higher attack success rate** than the
+benchmarks at small query budgets (100, 250) — a result the CIFAR demo below
+reproduces.
 
-It's the standalone, from-scratch companion to
-[`../SQBA_Attack_Walkthrough.ipynb`](../SQBA_Attack_Walkthrough.ipynb): the
-notebook visualises the *real* `sqba.py` against VGG-16/ResNet-18, while this
-script rebuilds the *whole family* in ~300 lines of numpy on an 8×8 digits model
-you can run anywhere in a few seconds.
+The attack ladder lives in [`attacks.py`](./attacks.py) (shared, model- and
+data-agnostic), driven by two demos:
+
+| Demo | Victim / data | Deps | Runtime | Best for |
+|---|---|---|---|---|
+| [`lineage.py`](./lineage.py) | sklearn MLP on 8×8 **digits** (64-dim) | `numpy`, `scikit-learn` | seconds | reading the whole ladder fast; the clean weaken-surrogate sweep |
+| [`cifar_lineage.py`](./cifar_lineage.py) | tiny **CNNs** on 2-class **CIFAR-10** (3072-dim) | `numpy`, `torch` (CPU) | ~minutes (cached after) | the paper's setting: ASR-vs-budget, cross-arch transfer, where SQBA's multi-gradient pays off |
 
 ## Run it
 
 ```bash
-uv run lineage.py
+uv run lineage.py          # digits — fast, numpy + scikit-learn only
+uv run cifar_lineage.py    # CIFAR-10 — first run downloads ~170 MB data + CPU torch
 ```
 
-[`uv`](https://docs.astral.sh/uv/) reads the PEP-723 header at the top of the
-script and provisions `numpy` + `scikit-learn` in an ephemeral environment —
-nothing is installed globally, no virtualenv to manage. Runtime is a few seconds
-on a CPU. (You can also run it with a normal `python lineage.py` if those two
-packages are already installed.)
+[`uv`](https://docs.astral.sh/uv/) reads the PEP-723 header in each script and
+provisions deps in an ephemeral environment — nothing installed globally.
+`cifar_lineage.py` caches the CIFAR tar, the 2-class subset, and the trained nets
+under `~/.cache/blackbox`, so only the **first** run pays the download/training
+cost; later runs are ~1–2 min.
 
 ## The core idea
 
@@ -63,61 +66,71 @@ queries HopSkipJump spends *estimating* the normal are replaced by a free
 surrogate backward pass. When the surrogate stops helping, SQBA falls back to the
 query-based estimate, gracefully decaying into HopSkipJump.
 
-## Example output
+## Example output — digits (`lineage.py`)
 
 ```
-BLACK-BOX ADVERSARIAL ATTACK LINEAGE  (one image; victim is hard-label only)
+DIGITS ATTACK LINEAGE  (one image; victim is hard-label only)
 attack         yr  victim_q      L2  win   key idea
--- WHITE-BOX --------------------------------------------------------
-fgsm          '14         0   2.042    Y   one gradient-sign step on surrogate
-pgd           '17         0   2.046    Y   iterated FGSM on surrogate
--- TRANSFER ---------------------------------------------------------
-transfer      '16         4   1.375    Y   grow eps on surrogate til victim flips
--- HARD-LABEL -------------------------------------------------------
+-- HARD-LABEL ----------------------------------------------------------
 random         -       1500   2.199    Y   blind noise (scaffold)
 line           -          8   1.667    Y   aim at nearest class + binsearch (scaffold)
 boundary      '18       500   1.764    Y   random walk along boundary
 opt           '19       699   1.623    Y   minimize g(theta), zeroth-order
 sign-opt      '20       274   1.528    Y   g(theta) via SIGN of dir. deriv
 hopskipjump   '20       401   1.072    Y   MC boundary-normal estimate
--- SURROGATE --------------------------------------------------------
+-- SURROGATE -----------------------------------------------------------
 biased-bdry   '19       500   1.001    Y   surrogate-biased boundary walk
 sqba          '24       314   0.893    Y   teaching: single surrogate normal + fallback
 sqba-full     '24       550   0.920    Y   paper Algo 1: multi-gradient + beta switch
 ```
 
-There are **two SQBA rows**: `sqba` is the simplified teaching version (one
-surrogate gradient per step), and `sqba-full` is the paper-faithful Algorithm 1
-(multi-gradient ∇H_w + β switch + sign-gradient init — see below). On this 64-dim
-toy the full version costs *more* queries for a similar L2, because its
-distinctive multi-gradient method exploits how the surrogate gradient rotates in
-*high*-dimensional image space (paper Fig 2) — an effect that barely shows on 8×8
-digits. The point of including it is fidelity to the algorithm, not a win here.
-
 Columns: `victim_q` = queries to the black-box victim (the budget being
-minimised); `L2` = perturbation size; `win` = did the final image fool the
-victim. **White-box/transfer rows show `victim_q ≈ 0`** because they attack the
-*surrogate* and only "win" if the example transfers.
+minimised); `L2` = perturbation size; `win` = did the final image fool the victim.
+Reading it as history along the hard-label spine — quality climbs as the
+boundary-normal estimate improves: random walk → distance optimisation → cheap
+sign-gradient → Monte-Carlo normal (`1.76 → 1.62 → 1.53 → 1.07`), then the
+surrogate-assisted rungs (Biased Boundary, SQBA) reach the smallest perturbation.
+(FGSM/PGD/transfer need pixel gradients, so they're shown in the CIFAR demo.)
 
-How to read it as history:
+There are **two SQBA rows**: `sqba` (teaching: one surrogate gradient per step)
+and `sqba-full` (paper-faithful Algorithm 1: multi-gradient ∇H_w + β switch +
+sign-gradient init). On this 64-dim toy the full version costs *more* for a similar
+L2 — its multi-gradient method exploits gradient rotation in *high* dimensions
+(paper Fig 2), which barely exists on 8×8 digits. **On CIFAR below it wins.**
 
-- **FGSM → PGD** — the gradient mechanism (run on the surrogate). Reliable and
-  strong but not L2-minimal (~2.0) and `victim_q=0` (they only transfer).
-- **transfer** — the black-box *use* of those gradients: craft on the surrogate,
-  grow ε until the victim flips. Cheap (4 queries) but no control over size.
-- **Boundary → OPT → Sign-OPT → HopSkipJump** — the hard-label spine. Watch
-  quality climb as the normal estimate improves: random walk → distance
-  optimisation → cheap sign-gradient → Monte-Carlo normal (`1.76 → 1.62 → 1.53 →
-  1.07`). Note Sign-OPT beats OPT on *both* L2 and queries — the "sign trick"
-  needs one query per probe instead of a full search.
-- **Biased Boundary → SQBA** — put the surrogate gradient *back into* the
-  boundary search. The two branches fuse; SQBA reaches the smallest perturbation.
+## CIFAR-10: the paper's setting (`cifar_lineage.py`)
+
+Tiny CNNs (different architectures for victim vs surrogate — real cross-arch
+transfer) on a 2-class slice (**cat vs dog**, 3072-dim). Perturbation is the
+paper's relative budget `ρ = ‖x_adv − x‖ / ‖x‖`, success `ρ ≤ 0.10`. The whole
+ladder still runs, but now the **ASR-vs-query-budget** table (the shape of the
+paper's Tables 3–6) is the headline:
+
+```
+ASR vs QUERY BUDGET  (success = rho<=0.10 within budget; 8 images, strong surrogate)
+attack           Q=100    Q=250   Q=1000
+hopskipjump         0%      25%      88%
+sign-opt            0%      25%      75%
+boundary           12%       0%       0%
+biased-bdry       100%     100%     100%
+sqba              100%     100%     100%
+sqba-full         100%     100%     100%
+```
+
+This **reproduces the paper's central result**: at small budgets (100, 250) the
+surrogate-assisted attacks reach ~100% ASR while the pure query-based methods
+(HopSkipJump, Sign-OPT) are stuck at 0–25% — the "~5× higher ASR at small query
+budgets" claim. And in this high dimension **`sqba-full` (ρ=0.039) finally beats
+the teaching `sqba` (ρ=0.042)** on the single-image table — the multi-gradient
+payoff the digits toy couldn't show. Pure decision-based attacks struggle here:
+the Boundary Attack's random walk barely improves (`ρ≈1.0`), exactly the
+query-inefficiency SQBA was designed to fix.
 
 ## The weaken-surrogate knob
 
-`build_surrogate(frac=…, hidden=…, label_noise=…)` controls how well the
-surrogate mimics the victim. The sweep runs SQBA with four surrogates of
-decreasing quality (averaged over 5 images):
+`build_surrogate(frac=…, label_noise=…, …)` controls how well the surrogate mimics
+the victim. The sweep runs SQBA with surrogates of decreasing quality. On **digits**
+(10 classes, agreement spans a wide range) the trend is cleanest:
 
 ```
 surrogate   agree%      L2  victim_q  white_only  fallbacks
@@ -133,7 +146,9 @@ As the surrogate degrades, `white_only` (free surrogate steps) **falls 8.2 → 2
 paying for the Monte-Carlo estimate instead — **smoothly decaying into
 HopSkipJump**. That degradation *is* the thesis of the paper: a good surrogate
 buys query efficiency; a useless one costs nothing in attack quality but loses
-the savings.
+the savings. (`cifar_lineage.py` runs the same sweep; on the 2-class task the
+range is compressed because binary agreement floors near 50%, so the digits sweep
+is the better illustration of the knob.)
 
 ## Per-rung paper map
 
@@ -211,32 +226,33 @@ simple for reading.
 
 ## Honest caveats
 
-This is a teaching model (64-dim digits), not a benchmark. Read the *mechanisms*
-as faithful and the *exact numbers* as illustrative:
+These are teaching models, not a benchmark. Read the *mechanisms* as faithful and
+the *exact numbers* as illustrative:
 
-- **PGD ≈ FGSM in L2.** At a fixed L∞ radius both saturate the same ball, so
-  PGD's advantage (reliability, success at smaller ε) doesn't show as a smaller
-  L2 on this easy task.
-- **`line` (scaffold) beats `boundary`/`opt` in L2** only because it initialises
-  from the *nearest* class while rungs 3–5 deliberately start from a *loose* far
-  point — so the comparison is about the optimisation, not the lucky start.
-- **OPT/Sign-OPT shine in high dimensions.** On 64-dim digits their per-query
-  advantage over HopSkipJump is muted; the lineage and query *trends* are
-  faithful, the rankings between close methods are not a benchmark result.
-- **One image is noisy**; the weaken sweep is averaged over 5 to make the trend
-  readable.
-- **`sqba-full` costs more than `sqba` here, and that's expected.** The
-  multi-gradient method pays for extra probes per step to find a better direction,
-  but its payoff (gradient rotation in high-dimensional image space, Fig 2) barely
-  exists on 8×8 digits. On CIFAR-10/ImageNet — the paper's setting — that trade
-  flips. Treat `sqba-full` as a faithful *algorithm*, not a faster *result* on
-  this toy.
+- **Digits is tiny (64-dim, 10 classes).** OPT/Sign-OPT and the multi-gradient
+  method shine in high dimensions, so on digits the rankings between close methods
+  aren't a benchmark result — the *lineage and query trends* are the point. CIFAR
+  is where the high-dimensional behaviour (incl. `sqba-full` winning) shows.
+- **`line` (scaffold) can beat `boundary` in L2** only because it initialises from
+  the *nearest* class while the decision-based rungs deliberately start from a
+  *loose* far point — the comparison is about the optimisation, not the start.
+- **CIFAR victim accuracy is ~0.68** (cat vs dog is the *hardest* CIFAR-10 pair,
+  chosen so the boundary isn't trivial). Tiny CNNs + 800 imgs/class; bump epochs in
+  `train_net` for more. Attacks only target test images the victim classifies
+  correctly, so success stays meaningful.
+- **PGD ≈ FGSM in L∞ size**; PGD's edge is reliability, not a smaller perturbation
+  at the same ε.
+- **Few images, averaged** to keep CPU time low; the per-budget ASR is over 8
+  images and the weaken sweep over 4–5, so treat single percentages as indicative.
 
 ## Files
 
-- [`lineage.py`](./lineage.py) — the script (heavily commented; every function
-  states the paper and idea it implements). Contains both `attack_sqba` (teaching)
-  and `attack_sqba_full` (paper-faithful Algorithm 1).
+- [`attacks.py`](./attacks.py) — the shared, model-/data-agnostic attack ladder:
+  all 11 attacks plus `attack_sqba` (teaching) and `attack_sqba_full` (paper-faithful
+  Algorithm 1). Heavily commented; every function names the paper and idea.
+- [`lineage.py`](./lineage.py) — digits demo (numpy + scikit-learn, runs in seconds).
+- [`cifar_lineage.py`](./cifar_lineage.py) — CIFAR-10 2-class demo (tiny CPU CNNs):
+  single-image ladder, **ASR-vs-query-budget** table, and the weaken sweep.
 - [`README.md`](./README.md) — this file.
 - The source paper (open-access):
   [Park, Miller & McLaughlin, *Hard-label based Small Query Black-box Adversarial Attack*, WACV 2024](https://openaccess.thecvf.com/content/WACV2024/papers/Park_Hard-Label_Based_Small_Query_Black-Box_Adversarial_Attack_WACV_2024_paper.pdf).
