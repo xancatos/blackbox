@@ -260,16 +260,25 @@ def attack_transfer(ctx, x0, y0, sgrad):
 # ============================================================================
 print("training tiny CNNs (cached after first run) ...")
 victim = train_net(VictimNet(), Xtr, ytr, epochs=12, seed=0, tag="victim_air_auto")
+# White-box replica surrogate (attacker trains identical architecture on same dataset)
+surr_wb = train_net(VictimNet(), Xtr, ytr, epochs=12, seed=42, tag="surr_wb_air_auto")
+# Black-box generic surrogate (attacker has generic external helper model)
 surr = build_surrogate(tag="surr_strong_air_auto")
+
 victim_label = make_label(victim)
-print(f"victim acc {accuracy(victim, Xte, yte):.3f} | surrogate acc {accuracy(surr, Xte, yte):.3f} | "
-      f"victim/surrogate agree {np.mean([victim_label(x) == make_label(surr)(x) for x in Xte]):.3f}")
+print(f"victim acc {accuracy(victim, Xte, yte):.3f} | "
+      f"replica surrogate acc {accuracy(surr_wb, Xte, yte):.3f} | "
+      f"generic surrogate acc {accuracy(surr, Xte, yte):.3f}")
+print(f"victim/replica agreement {np.mean([victim_label(x) == make_label(surr_wb)(x) for x in Xte]):.3f} | "
+      f"victim/generic agreement {np.mean([victim_label(x) == make_label(surr)(x) for x in Xte]):.3f}")
 
 def make_ctx(s):
     return Ctx(victim_label, make_sgrad(s), Xtr, ytr, rng, lo=0.0, hi=1.0)
 
 ctx = make_ctx(surr)
 sgrad = make_sgrad(surr)
+wb_grad = make_sgrad(surr_wb)
+
 # Perturbation size metric (rho): L2 norm of the change divided by the L2 norm of the original image.
 # An attack is considered successful if rho <= 0.25.
 rho = lambda adv, x0: np.linalg.norm(adv - x0) / np.linalg.norm(x0)
@@ -287,9 +296,9 @@ def run(fn):
     return fn(), ctx.q
 
 plan = [
-    ("white-box", "fgsm",       "'14", "one gradient-sign step on surrogate",        lambda: attack_fgsm(x0, y0, sgrad)),
-    ("white-box", "pgd",        "'17", "iterated FGSM on surrogate",                 lambda: attack_pgd(x0, y0, sgrad)),
-    ("transfer",  "transfer",   "'16", "grow eps on surrogate til victim flips",     lambda: attack_transfer(ctx, x0, y0, sgrad)),
+    ("white-box", "fgsm",       "'14", "one gradient-sign step on replica surr",     lambda: attack_fgsm(x0, y0, wb_grad)),
+    ("white-box", "pgd",        "'17", "iterated FGSM on replica surr",              lambda: attack_pgd(x0, y0, wb_grad)),
+    ("transfer",  "transfer",   "'16", "grow eps on replica surr til victim flips",  lambda: attack_transfer(ctx, x0, y0, wb_grad)),
     ("hard-label","random",     " - ", "blind noise (scaffold)",                     lambda: attack_random(ctx, x0, y0, N=400, scale=0.2)),
     ("hard-label","line",       " - ", "nearest class + binsearch (scaffold)",       lambda: attack_line(ctx, x0, y0)),
     ("hard-label","boundary",   "'18", "random walk along boundary",                 lambda: attack_boundary(ctx, x0, y0, loose, steps=400)),
@@ -302,26 +311,29 @@ rows = []
 for tier, name, year, idea, fn in plan:
     x, q = run(fn)
     r_val = rho(x, x0)
-    win_val = ctx.fooled(x, y0) and r_val <= 0.25
-    rows.append((tier, name, year, q, r_val, win_val, idea))
+    flip_val = ctx.fooled(x, y0)
+    win_val = flip_val and r_val <= 0.25
+    rows.append((tier, name, year, q, r_val, flip_val, win_val, idea))
 x, q = run(lambda: attack_sqba(ctx, x0, y0, loose)[0])
 r_val = rho(x, x0)
-win_val = ctx.fooled(x, y0) and r_val <= 0.25
-rows.append(("surrogate", "sqba", "'24", q, r_val, win_val, "teaching: single surrogate normal + fallback"))
+flip_val = ctx.fooled(x, y0)
+win_val = flip_val and r_val <= 0.25
+rows.append(("surrogate", "sqba", "'24", q, r_val, flip_val, win_val, "teaching: single surrogate normal + fallback"))
 x, q = run(lambda: attack_sqba_full(ctx, x0, y0)[0])
 r_val = rho(x, x0)
-win_val = ctx.fooled(x, y0) and r_val <= 0.25
-rows.append(("surrogate", "sqba-full", "'24", q, r_val, win_val, "paper Algo 1: multi-gradient + beta switch"))
+flip_val = ctx.fooled(x, y0)
+win_val = flip_val and r_val <= 0.25
+rows.append(("surrogate", "sqba-full", "'24", q, r_val, flip_val, win_val, "paper Algo 1: multi-gradient + beta switch"))
 
 print("\n" + "=" * 88)
 print(f"CIFAR-10 (airplane vs automobile) ATTACK LINEAGE  (one image; hard-label only; success = rho<=0.25)")
 print("=" * 88)
-print(f"{'attack':<13}{'yr':>4}{'victim_q':>10}{'rho':>8}{'win':>5}   key idea")
+print(f"{'attack':<13}{'yr':>4}{'victim_q':>10}{'rho':>8}{'flip':>6}{'win':>5}   key idea")
 last = None
-for tier, name, year, q, r, win, idea in rows:
+for tier, name, year, q, r, flip, win, idea in rows:
     if tier != last:
         print(f"-- {tier.upper()} " + "-" * (82 - len(tier))); last = tier
-    print(f"{name:<13}{year:>4}{q:>10}{r:>8.3f}{('Y' if win else 'n'):>5}   {idea}")
+    print(f"{name:<13}{year:>4}{q:>10}{r:>8.3f}{('Y' if flip else 'n'):>6}{('Y' if win else 'n'):>5}   {idea}")
 
 # ============================================================================
 # (B) ASR vs query-budget
