@@ -440,7 +440,7 @@ def run(fn):
 plan = [
     ("white-box", "fgsm",       "'14", "one gradient-sign step on replica surr",     lambda: attack_fgsm(x0, y0, wb_grad)),
     ("white-box", "pgd",        "'17", "iterated FGSM on replica surr",              lambda: attack_pgd(x0, y0, wb_grad)),
-    ("transfer",  "transfer",   "'16", "grow eps on replica surr til victim flips",  lambda: attack_transfer(ctx, x0, y0, wb_grad)),
+    ("transfer",  "transfer",   "'16", "grow eps on generic surr til victim flips",  lambda: attack_transfer(ctx, x0, y0, sgrad)),
     ("hard-label","random",     " - ", "blind noise (scaffold)",                     lambda: attack_random(ctx, x0, y0, N=400, scale=0.2)),
     ("hard-label","line",       " - ", "nearest class + binsearch (scaffold)",       lambda: attack_line(ctx, x0, y0)),
     ("hard-label","boundary",   "'18", "random walk along boundary",                 lambda: attack_boundary(ctx, x0, y0, loose, steps=400)),
