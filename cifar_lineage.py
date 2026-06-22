@@ -342,11 +342,11 @@ M = 8
 asr_imgs = [Xte[i].astype(np.float64) for i in range(len(Xte)) if victim_label(Xte[i]) == yte[i]][:M]
 budgets = [100, 250, 1000]
 runners = {                                       
-    "hopskipjump": lambda c, x, y: attack_hsj(c, x, y, loose_start(c, x, y), iters=100),
-    "sign-opt":    lambda c, x, y: attack_sign_opt(c, x, y, loose_start(c, x, y), iters=100),
     "boundary":    lambda c, x, y: attack_boundary(c, x, y, loose_start(c, x, y), steps=100000),
-    "biased-bdry": lambda c, x, y: attack_boundary(c, x, y, loose_start(c, x, y), bias=0.5, steps=100000),
+    "sign-opt":    lambda c, x, y: attack_sign_opt(c, x, y, loose_start(c, x, y), iters=100),
+    "hopskipjump": lambda c, x, y: attack_hsj(c, x, y, loose_start(c, x, y), iters=100),
     "triangle":    lambda c, x, y: attack_triangle(c, x, y, loose_start(c, x, y), iters=200),
+    "biased-bdry": lambda c, x, y: attack_boundary(c, x, y, loose_start(c, x, y), bias=0.5, steps=100000),
     "sqba":        lambda c, x, y: attack_sqba(c, x, y, loose_start(c, x, y), iters=100)[0],
     "sqba-full":   lambda c, x, y: attack_sqba_full(c, x, y, iters=100)[0],
 }
