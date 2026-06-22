@@ -46,7 +46,7 @@ import torch.nn.functional as F
 from attacks import (Ctx, loose_start, attack_random, attack_line, attack_boundary,
                      attack_sign_opt, attack_hsj, attack_triangle, attack_sqba, attack_sqba_full)
 
-# Set random seed for reproducibility
+# Set random seed for reproducibility (ensures network initializations are consistent across runs)
 torch.manual_seed(0)
 # Use all available CPU cores to make PyTorch operations fast
 torch.set_num_threads(max(1, (os.cpu_count() or 2)))
@@ -61,13 +61,57 @@ AIRPLANE, AUTOMOBILE = 0, 1                       # Class indices for airplane a
 # (airplanes and automobiles) to keep the demo quick and lightweight.
 # ============================================================================
 def _read_batch(tar, name):
-    # Reads a single pickle batch file from the CIFAR-10 compressed tarball.
+    """
+    Reads a single pickle batch file from the CIFAR-10 compressed tarball.
+
+    Parameters:
+    -----------
+    tar : tarfile.TarFile
+        The opened tar file pointer.
+    name : str
+        The member name of the batch file in the tarball.
+
+    Returns:
+    --------
+    tuple (np.ndarray, np.ndarray)
+        - Data array of shape (batch_size, 3072) representing pixel values.
+        - Labels array of shape (batch_size,) representing correct class index.
+    """
     d = pickle.load(tar.extractfile(name), encoding="bytes")
     return d[b"data"], np.array(d[b"labels"])
 
 def load_cifar2(c0=AIRPLANE, c1=AUTOMOBILE, n_train=3000, n_test=200):
-    # Downloads CIFAR-10 if not already present, extracts airplane and automobile images,
-    # normalizes pixel values to [0.0, 1.0], and caches the result for fast re-runs.
+    """
+    Downloads CIFAR-10 if not already present, extracts airplane and automobile images,
+    normalizes pixel values to [0.0, 1.0], and caches the result for fast re-runs.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `255.0`: The maximum integer value of a color pixel (8-bit representation).
+      Dividing by 255.0 normalizes values to [0.0, 1.0]. This standard scaling prevents
+      exploding gradients during neural network training.
+    - `3000` (n_train) & `200` (n_test): The subset size. This is chosen to be large enough
+      to train standard CNNs to high accuracy (>=90%) in seconds without requiring GPU acceleration.
+
+    Parameters:
+    -----------
+    c0 : int
+        First class category to select (Airplane = 0).
+    c1 : int
+        Second class category to select (Automobile = 1).
+    n_train : int
+        Number of training images to sample.
+    n_test : int
+        Number of test images to sample.
+
+    Returns:
+    --------
+    tuple (np.ndarray, np.ndarray, np.ndarray, np.ndarray)
+        - Xtr: Training images (n_train, 3072).
+        - ytr: Training labels (n_train,).
+        - Xte: Test images (n_test, 3072).
+        - yte: Test labels (n_test,).
+        """
     npz = os.path.join(CACHE, f"cifar2_{c0}-{c1}_{n_train}_{n_test}.npz")
     if os.path.exists(npz):
         z = np.load(npz)
@@ -112,6 +156,7 @@ Xtr, ytr, Xte, yte = load_cifar2()
 # standard deviation. This centres the values around 0, which makes training much faster.
 # We do this normalization inside the model's `forward` function so our attacks can
 # work directly with plain [0,1] images.
+# These values are standard statistics computed across the entire CIFAR-10 dataset.
 MEAN = torch.tensor([0.4914, 0.4822, 0.4465]).view(1, 3, 1, 1)
 STD = torch.tensor([0.2470, 0.2435, 0.2616]).view(1, 3, 1, 1)
 
@@ -119,6 +164,18 @@ class VictimNet(nn.Module):
     """
     The Victim CNN model.
     It uses 3x3 pixel filters. The first layer outputs 32 feature maps, the second 64, and the third 64.
+    
+    Explanation of PyTorch Layers for Beginners:
+    -------------------------------------------
+    - `nn.Conv2d(in_channels, out_channels, kernel_size)`: Performs a 2D convolution.
+      Slides a small matrix of weights (filters) of size `kernel_size x kernel_size` across
+      the image's channels to extract local visual patterns like edges.
+    - `F.relu()`: Rectified Linear Unit. A non-linear activation function that replaces
+      all negative numbers with 0.0. This allows the network to learn complex patterns.
+    - `F.max_pool2d(x, 2)`: Slides a 2x2 window and keeps only the maximum value.
+      This divides both the width and height of the image by 2, shrinking spatial size.
+    - `nn.Linear(in_features, out_features)`: A fully connected layer that multiplies the
+      flattened pixel representation by a weight matrix to produce classification scores (logits).
     """
     def __init__(self):
         super().__init__()
@@ -155,6 +212,35 @@ class SurrogateNet(nn.Module):
 def train_net(net, X, y, epochs=5, bs=64, seed=0, tag=None):
     """
     Standard neural network training loop.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `epochs=12` (passed from driver): Number of complete runs through the dataset.
+      Chosen to reach >=94% test accuracy for our CIFAR-10 classifier.
+    - `bs=64` (batch size): The number of images processed at once to compute gradient updates.
+    - `1e-3` (learning rate): The step size coefficient used by the Adam optimizer.
+
+    Parameters:
+    -----------
+    net : nn.Module
+        The network to train.
+    X : np.ndarray
+        Input training images.
+    y : np.ndarray
+        Correct label indices.
+    epochs : int, default=5
+        Number of complete training passes.
+    bs : int, default=64
+        Batch size.
+    seed : int, default=0
+        Random seed for parameter initialization.
+    tag : str, optional
+        Checkpoint file name.
+
+    Returns:
+    --------
+    nn.Module
+        The trained network.
     """
     if tag:
         ckpt = os.path.join(CACHE, f"net_{tag}.pt")
@@ -178,14 +264,32 @@ def train_net(net, X, y, epochs=5, bs=64, seed=0, tag=None):
     return net
 
 def accuracy(net, X, y):
-    # Calculates the percentage of images the network classifies correctly.
+    """
+    Calculates the percentage of images the network classifies correctly.
+
+    Parameters:
+    -----------
+    net : nn.Module
+        The neural network.
+    X : np.ndarray
+        Images to classify.
+    y : np.ndarray
+        Correct ground-truth labels.
+
+    Returns:
+    --------
+    float
+        The accuracy score (0.0 to 1.0).
+    """
     with torch.no_grad():
         pred = net(torch.tensor(X.reshape(-1, 3, 32, 32), dtype=torch.float32)).argmax(1).numpy()
     return float((pred == y).mean())
 
 # ---- Interfaces for Attack Context ----
 def make_label(net):
-    # Wraps a model to create a black-box interface: returns only the final predicted label index.
+    """
+    Wraps a PyTorch CNN model to provide a simple black-box hard-label prediction function.
+    """
     def label(x):                                 
         with torch.no_grad():                     
             t = torch.tensor(x.reshape(1, 3, 32, 32), dtype=torch.float32)
@@ -193,6 +297,17 @@ def make_label(net):
     return label
 
 def make_sgrad(net):
+    """
+    Wraps a model to calculate the normalized mathematical input gradient.
+    Setting `requires_grad=True` allows tracking operations on `t`. `backward()`
+    computes derivatives of the classification loss with respect to every pixel.
+    
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `np.linalg.norm(g)`: The L2 norm of the gradient vector. We divide `g` by this norm
+      to normalize it to unit length (length = 1.0). This isolates the direction of the change,
+      which is the adversarial direction.
+    """
     def sgrad(x, y0):
         t = torch.tensor(x.reshape(1, 3, 32, 32), dtype=torch.float32, requires_grad=True)
         F.cross_entropy(net(t), torch.tensor([y0])).backward()   
@@ -203,7 +318,10 @@ def make_sgrad(net):
 
 # ---- The surrogate quality knob ----
 def build_surrogate(frac=1.0, width=1.0, label_noise=0.0, epochs=10, seed=7, tag=None):
-    # Helper to construct surrogates with adjustable dataset sizes, widths, or noise.
+    """
+    Helper to construct surrogates with adjustable dataset sizes, widths, or noise.
+    Used to sweep and test how SQBA degrades when surrogate quality decreases.
+    """
     idx = rng.choice(len(Xtr), max(64, int(frac * len(Xtr))), replace=False)
     Xs, ys = Xtr[idx].copy(), ytr[idx].copy()
     if label_noise:                               
@@ -222,6 +340,18 @@ def pgd_on_surr(x0, y0, sgrad, eps, steps):
     Steps along the direction of the gradient sign to maximize loss,
     clipping the pixels back into the valid [0,1] range and within the
     budget distance `eps` from the original image at each step.
+
+    Explanation of Math/Logic:
+    -------------------------
+    - `np.sign(sgrad(x, y0))`: Takes the sign of every pixel gradient element (+1 for positive,
+      -1 for negative, 0 for zero). Stepping along the signs maximizes the L-infinity perturbation.
+    - `np.clip(x, x0 - eps, x0 + eps)`: Projects the updated image vector back onto the L-infinity
+      sphere around `x0` by restricting the change of every pixel to be at most `eps`.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `eps / 4`: The step size `alpha`. A standard heuristic. Iterating 4 or more smaller steps of size
+      `eps/4` allows PGD to converge cleanly without overshooting.
     """
     x, alpha = x0.copy(), (eps / 4 if steps > 1 else eps)
     for _ in range(steps):
@@ -248,6 +378,12 @@ def attack_transfer(ctx, x0, y0, sgrad):
     Transfer Attack:
     Crafts a PGD image on the surrogate, slowly increasing the budget `eps`
     until it successfully flips the label on the victim model.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `np.linspace(0.01, 0.25, 16)`: We sweep 16 levels of epsilon from 0.01 (almost invisible)
+      up to 0.25 (the limit of success). This is done to find the smallest budget that succeeds.
+    - `15`: The number of PGD iterations used at each budget check.
     """
     for eps in np.linspace(0.01, 0.25, 16):       
         x = pgd_on_surr(x0, y0, sgrad, eps, 15)
@@ -281,6 +417,12 @@ wb_grad = make_sgrad(surr_wb)
 
 # Perturbation size metric (rho): L2 norm of the change divided by the L2 norm of the original image.
 # An attack is considered successful if rho <= 0.25.
+#
+# Explanation of Math:
+# --------------------
+# - `np.linalg.norm(adv - x0)`: L2 distance of the perturbation (the difference).
+# - `np.linalg.norm(x0)`: L2 distance of the original image.
+# - Dividing them yields a relative scaling ratio (rho).
 rho = lambda adv, x0: np.linalg.norm(adv - x0) / np.linalg.norm(x0)
 
 # ============================================================================

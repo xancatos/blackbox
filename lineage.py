@@ -31,18 +31,32 @@ rng = np.random.default_rng(0)
 # ---- 1. Load data and train the black-box victim model ----
 # We use scikit-learn's built-in digits dataset.
 digits = load_digits()
-# Flatten each 8x8 image into a 1D vector of 64 numbers, and scale values from [0, 16] to [0, 1] for better training.
+# Flatten each 8x8 image into a 1D vector of 64 numbers.
+# We divide by 16.0 because original pixels range from 0 to 16. Scaling them to [0, 1] is standard
+# practice in ML to ensure stable optimization and gradient behavior.
 X = digits.images.reshape(len(digits.images), -1) / 16.0      
 y = digits.target
 # Split the dataset: 80% for training the model, 20% for testing the attacks.
 Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=0)
-# Train our victim model. This is the model we want to fool.
-# It has one hidden layer of 128 neurons.
+# Train our victim model. This has one hidden layer of 128 neurons.
+# max_iter=600 is chosen to guarantee that the optimizer fully converges to a highly accurate model.
 victim = MLPClassifier(hidden_layer_sizes=(128,), max_iter=600, random_state=0).fit(Xtr, ytr)
 
 
 def victim_label(x):                                  
-    # Helper function: asks the victim model to guess the digit (label) for a flat input image.
+    """
+    Helper function: asks the victim model to predict the digit label for a flat input image vector.
+
+    Parameters:
+    -----------
+    x : np.ndarray
+        Flat image vector (size 64).
+
+    Returns:
+    --------
+    int
+        Predicted label index (digit 0 to 9).
+    """
     return int(victim.predict(x.reshape(1, -1))[0])
 
 
@@ -56,6 +70,11 @@ def build_surrogate(frac=1.0, hidden=96, seed=7, label_noise=0.0):
     - `frac`: fraction of training data to use (less data -> worse model).
     - `hidden`: number of neurons in the hidden layer (fewer neurons -> weaker model).
     - `label_noise`: percentage of training labels to randomly mess up.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `20`: Minimum number of training samples allowed in sub-sampling to prevent the model from crashing.
+    - `400`: Max iterations for training, sufficient for convergence on small sub-samples.
     """
     idx = rng.choice(len(Xtr), max(20, int(frac * len(Xtr))), replace=False)
     Xs, ys = Xtr[idx].copy(), ytr[idx].copy()
@@ -90,6 +109,12 @@ def mlp_sgrad(surr):
     - Step D: Propagate back through the first layer weights: `@ W1.T`.
     
     We return the final pixel-direction as a unit vector (length 1) so only the direction matters.
+
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `np.exp(a2 - a2.max())`: Shift logits by subtracting their maximum value before exponentiation.
+      This standard trick prevents numerical overflow (producing `inf` values) while keeping softmax probabilities identical.
+    - `np.linalg.norm(g)`: Euclidean L2 norm of the gradient. Normalizes the gradient direction to length 1.
     """
     W1, W2 = surr.coefs_; b1, b2 = surr.intercepts_      
     def sgrad(x, y0):

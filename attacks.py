@@ -50,45 +50,135 @@ class Ctx:
     The clipping bounds inside Ctx are scaled to `lo = 0.0` and `hi = W`.
     """
     def __init__(self, label_fn, sgrad_fn, pool_X, pool_y, rng, lo=0.0, hi=1.0):
-        # `label_fn` is a function that asks the victim model for its guess (without counting it).
-        # We wrap this to count every time an attack asks the victim model a question.
+        """
+        Initializes the Context helper object.
+
+        Parameters:
+        -----------
+        label_fn : callable
+            A function that asks the victim model for its predicted label.
+        sgrad_fn : callable
+            A function that calculates the surrogate model's normalized input gradient.
+        pool_X : np.ndarray
+            A database of clean dataset images used to search for starting points.
+        pool_y : np.ndarray
+            The correct label indices corresponding to pool_X.
+        rng : np.random.Generator
+            A random number generator for reproducibility.
+        lo : float or np.ndarray, default=0.0
+            The minimum valid pixel boundary (0.0 for normal images).
+        hi : float or np.ndarray, default=1.0
+            The maximum valid pixel boundary (1.0 for normal images).
+        """
         self._label = label_fn
-        # `sgrad_fn` is a function that returns the gradient (change direction) from our surrogate helper model.
         self._sgrad = sgrad_fn
-        # A pool of clean images we can use to find starting points.
-        self.pool_X, self.pool_y = pool_X, pool_y
-        # A random number generator to help us add random noise when we need to explore.
+        self.pool_X = pool_X
+        self.pool_y = pool_y
         self.rng = rng
-        # The allowed range for pixel values (usually 0.0 to 1.0).
-        self.lo, self.hi = lo, hi
-        # A counter for how many times we queried the victim model.
+        self.lo = lo
+        self.hi = hi
         self.q = 0                     
-        # The maximum number of queries allowed. If we go over this, the attack stops early.
         self.budget = float("inf")     
 
     def clip(self, x):
-        # Clip ensures that all pixel values stay in the valid range [lo, hi] (e.g., between 0.0 and 1.0).
+        """
+        Ensures that all pixels in image `x` stay within the valid boundaries [lo, hi].
+
+        Parameters:
+        -----------
+        x : np.ndarray
+            The input image vector.
+
+        Returns:
+        --------
+        np.ndarray
+            The clipped image vector.
+        """
         return np.clip(x, self.lo, self.hi)
 
     def predict(self, x):
-        # Ask the victim model for its prediction and increment the query counter by 1.
+        """
+        Asks the victim model for a prediction and increments the query counter.
+
+        Parameters:
+        -----------
+        x : np.ndarray
+            The input image vector to classify.
+
+        Returns:
+        --------
+        int
+            The predicted label index from the victim model.
+        """
         self.q += 1
         return self._label(self.clip(x))
 
     def is_adv(self, x, y0):
-        # Returns True if the model's guess for `x` is NOT the correct label `y0` (meaning the model is fooled).
+        """
+        Checks if the victim classifies `x` as adversarial (a class other than `y0`).
+        This counts as 1 query.
+
+        Parameters:
+        -----------
+        x : np.ndarray
+            The candidate image vector.
+        y0 : int
+            The correct label index.
+
+        Returns:
+        --------
+        bool
+            True if the model is fooled, False otherwise.
+        """
         return self.predict(x) != y0
 
     def fooled(self, x, y0):           
-        # Same as `is_adv`, but does NOT count as a query. We use this only for printing the final summary.
+        """
+        Checks if the model classifies `x` as adversarial WITHOUT incrementing the query counter.
+        Used only for printing final diagnostic summaries.
+
+        Parameters:
+        -----------
+        x : np.ndarray
+            The candidate image vector.
+        y0 : int
+            The correct label index.
+
+        Returns:
+        --------
+        bool
+            True if the model is fooled, False otherwise.
+        """
         return self._label(self.clip(x)) != y0
 
     def sgrad(self, x, y0):
-        # Gets the gradient (best direction to change the image) from our surrogate helper model.
+        """
+        Asks the surrogate helper model for the normalized gradient direction.
+        Since we own the surrogate, this requires 0 queries to the victim.
+
+        Parameters:
+        -----------
+        x : np.ndarray
+            The input image vector.
+        y0 : int
+            The correct label index.
+
+        Returns:
+        --------
+        np.ndarray
+            The normalized gradient direction vector.
+        """
         return self._sgrad(self.clip(x), y0)
 
     def over(self):
-        # Checks if we have run out of our query budget.
+        """
+        Checks if the queries made so far have exceeded the specified budget.
+
+        Returns:
+        --------
+        bool
+            True if out of budget, False otherwise.
+        """
         return self.q >= self.budget
 
 
@@ -100,15 +190,38 @@ def binary_search(ctx, x_adv, x0, y0, tol=1e-2):
     Finds the boundary where the model changes its mind by searching the line between
     a clean image (`x0`) and an adversarial image (`x_adv`).
     
-    Imagine a slider between the clean image and the adversarial image. 
-    At 0% (clean image), the model is correct. At 100% (adversarial image), the model is fooled.
-    We want to find the exact percentage (say, 42%) where the model just starts to get fooled.
-    We do this by:
-    1. Finding the midpoint between the correct point (`lo`) and the incorrect point (`hi`).
-    2. Asking the model: "Does this midpoint fool you?"
-    3. If yes, the boundary is closer to the clean image, so we update `hi` to be this midpoint.
-    4. If no, the boundary is farther away, so we update `lo` to be this midpoint.
-    5. We repeat this until the distance between `lo` and `hi` is smaller than `tol` (tolerance).
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `np.linalg.norm(hi - lo)`: Calculates the Euclidean distance (also called the L2 norm)
+      between the two image vectors `hi` and `lo`. Conceptually, it takes the difference of
+      every corresponding pixel value, squares them, adds them all up, and takes the square root:
+      distance = sqrt(sum((hi_i - lo_i)^2)).
+    - `0.5 * (lo + hi)`: Linearly averages the two image vectors to find the exact halfway midpoint.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `tol=1e-2` (0.01): The convergence threshold. Once the Euclidean distance between
+      the benign point `lo` and the adversarial point `hi` is less than 0.01, we stop searching.
+      This value is chosen because it yields high spatial precision while keeping the number of
+      binary search steps low (typically log2(1 / 0.01) ≈ 7 steps).
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x_adv : np.ndarray
+        An adversarial starting image vector.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label of the clean image.
+    tol : float, default=1e-2
+        The distance tolerance at which to stop search.
+
+    Returns:
+    --------
+    np.ndarray
+        The boundary image vector (which classifies as adversarial but is extremely close to the clean space).
     """
     lo, hi = x0.copy(), x_adv.copy()
     while np.linalg.norm(hi - lo) > tol:
@@ -129,10 +242,38 @@ def attack_random(ctx, x0, y0, N=1500, scale=0.5):
     """
     A simple baseline attack that tries random noise.
     
-    It generates random changes (noise) to the image, checks if they fool the model,
-    and keeps the one that fools the model with the smallest change.
-    - `N`: how many random guesses to try.
-    - `scale`: how large the random changes can be.
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `ctx.rng.standard_normal(x0.shape)`: Generates a vector of the same shape as `x0` filled with
+      random numbers drawn from a Gaussian distribution (bell curve) with a mean of 0.0 and a standard
+      deviation of 1.0. This scatters changes randomly in all dimensions.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `N=1500`: The budget of random directions to try. Chosen because in low-dimensional spaces (like 64 pixels),
+      1500 trials are enough to occasionally find a random flip. In high-dimensional spaces (like CIFAR-10's 3072 features),
+      we override this to `N=400` in the demo to keep execution fast.
+    - `scale=0.5` (or `0.2` in CIFAR-10): The standard deviation scaling factor for the Gaussian noise.
+      If it is too small (e.g., 0.01), we will never flip the label. If it is too large (e.g., 2.0), the changes will be
+      massive and highly visible, resulting in a poor perturbation score.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    N : int, default=1500
+        Number of iterations.
+    scale : float, default=0.5
+        Standard deviation scale for random noise.
+
+    Returns:
+    --------
+    np.ndarray
+        The best adversarial image vector found, or the original image x0 if no flip was achieved.
     """
     best, best_d = None, np.inf
     for _ in range(N):
@@ -147,10 +288,31 @@ def attack_random(ctx, x0, y0, N=1500, scale=0.5):
 
 
 def _other_class_sample(ctx, x0, y0, farthest):
-    # Helper function: Finds an image from our pool that belongs to a DIFFERENT class
-    # than the original image's class (`y0`).
-    # If `farthest` is True, it returns the image that is most different from ours.
-    # If `farthest` is False, it returns the image that is closest to ours.
+    """
+    Finds an image from our database pool that belongs to a class other than `y0`.
+
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `np.linalg.norm(others - x0, axis=1)`: Subtracts `x0` from every row in the `others` array, and calculates
+      the L2 norm (length) of the difference vector for each image. This returns a 1D array of distances.
+    - `np.argmax(d)` / `np.argmin(d)`: Returns the index of the largest/smallest distance value in the array.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    farthest : bool
+        If True, returns the sample that is farthest from x0. If False, returns the closest.
+
+    Returns:
+    --------
+    np.ndarray
+        The selected image vector from a different class.
+    """
     others = ctx.pool_X[ctx.pool_y != y0]
     d = np.linalg.norm(others - x0, axis=1)
     return others[np.argmax(d) if farthest else np.argmin(d)]
@@ -160,6 +322,20 @@ def attack_line(ctx, x0, y0):
     """
     A simple attack that takes another image (like a dog if ours is a cat),
     draws a line between them, and uses binary search to find where they cross the boundary.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+
+    Returns:
+    --------
+    np.ndarray
+        The boundary image vector found on the line segment.
     """
     return binary_search(ctx, _other_class_sample(ctx, x0, y0, False), x0, y0)
 
@@ -169,6 +345,20 @@ def loose_start(ctx, x0, y0):
     Finds a starting point that is adversarial but quite far from our original image.
     We do this by choosing the farthest image of a different class, and searching the boundary on that line.
     This gives our optimization attacks a starting point that they can then try to improve.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+
+    Returns:
+    --------
+    np.ndarray
+        A guaranteed adversarial boundary starting point.
     """
     return binary_search(ctx, _other_class_sample(ctx, x0, y0, True), x0, y0)
 
@@ -177,18 +367,42 @@ def attack_boundary(ctx, x0, y0, x_init, bias=0.0, steps=500):
     """
     Boundary Attack: Walks along the decision boundary, trying to get closer to the original image.
     
-    Imagine walking along a fence (the decision boundary). One side is "cat" (correct), the other is "dog" (adversarial).
-    We start on the "dog" side. We want to take steps that:
-    1. Stay on the "dog" side (so we keep fooling the model).
-    2. Move us closer to our original cat image (`x0`).
-    
-    How it works:
-    - We take a step in a random direction that is tangent to the sphere around `x0` (so we don't change the distance to `x0` yet).
-    - If `bias > 0` (Biased Boundary Attack), instead of a completely random direction, we bias our step direction towards
-      the gradient from our surrogate helper model.
-    - Then, we take a small step towards the original image (`x0`).
-    - We ask the model if this new point is still adversarial. If yes, we accept the step. If no, we try again.
-    - We adjust how big our steps are based on how often our proposals are accepted (aiming for 20% to 50% acceptance).
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `eta - (eta @ r) / (d * d) * r`: Projects the random vector `eta` onto the tangent plane of the sphere
+      around `x0` at the point `x_b`. The dot product `@` measures how much `eta` points along the radial vector `r`.
+      Subtracting this component makes the step orthogonal (perpendicular) to `r`, which keeps the distance to `x0` constant.
+    - `cand - src * (cand - x0)`: Takes the candidate and pulls it direct line-of-sight towards `x0` by a fraction `src`.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `sph = 0.10`: Initial orthogonal step size. Chosen as a small fraction (10%) of the current distance to explore the boundary.
+    - `src = 0.05`: Initial radial step size. Chosen as 5% to pull the candidate closer to `x0`.
+    - `30`: The period for adjusting step sizes. After 30 steps, we evaluate the success rate.
+    - `0.2` and `0.5`: Target acceptance rates. If the success rate is < 20% (too many steps failed), we shrink step sizes by `0.9` to stay on the boundary.
+      If success rate is > 50% (too easy), we expand them by `1.1` to speed up optimization.
+    - `0.5` (bias): When `bias=0.5` (Biased Boundary Attack), we blend 50% random walk direction with 50% surrogate gradient direction.
+      This is a balanced value that guides the search using the surrogate model without getting stuck in local surrogate minima.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    x_init : np.ndarray
+        The starting adversarial image vector (on the boundary).
+    bias : float, default=0.0
+        The surrogate gradient steer bias.
+    steps : int, default=500
+        The maximum number of walk iterations.
+
+    Returns:
+    --------
+    np.ndarray
+        The optimized adversarial image vector closer to x0.
     """
     x_b = x_init.copy()
     sph, src, acc = 0.10, 0.05, []
@@ -238,6 +452,35 @@ def g_dist(ctx, x0, y0, theta, guess=1.0, tol=4e-2):
     """
     Finds how far we have to travel along a direction `theta` to hit the decision boundary.
     It uses binary search to find this distance.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `tol=4e-2` (0.04): The distance tolerance for the binary search. Since this function is called repeatedly
+      inside the gradient estimation loop, we use a looser tolerance (0.04 instead of 0.01) to save queries.
+    - `1.5`: The multiplier to increase the step size if the initial step isn't adversarial yet (exponential search).
+    - `50.0`: The maximum distance safety limit. If we go beyond this distance without finding a flip, we declare
+      the direction as non-adversarial (infinity) to avoid infinite loops.
+    - `0.5`: The halving factor to shrink search range.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    theta : np.ndarray
+        The direction unit vector.
+    guess : float, default=1.0
+        Initial distance guess.
+    tol : float, default=4e-2
+        Tolerance threshold.
+
+    Returns:
+    --------
+    float
+        The distance along theta to the boundary (or inf if out of range).
     """
     theta = theta / np.linalg.norm(theta)
     # If our guess is not adversarial, we increase our step size until we find a point that is.
@@ -263,14 +506,43 @@ def attack_opt(ctx, x0, y0, x_init, iters=14, q=6, beta=0.02, alpha=0.3):
     """
     OPT Attack: Minimizes the distance to the boundary by estimating gradients.
     
-    Since we cannot compute math gradients directly from the black-box model, we estimate them:
-    1. We pick `q` random directions.
-    2. We measure the boundary distance `g` for each random direction.
-    3. We average these measurements to estimate which way the boundary gets closer.
-    4. We take a step in that direction (using step size `alpha`).
-    
-    This is called "zeroth-order optimization" because we only use function values, not true derivatives.
-    Note: It is very query-hungry because each measurement requires a full binary search (`g_dist`).
+    Explanation of Math/Linear Algebra:
+    ----------------------------------
+    - `(g_dist(ctx, x0, y0, theta + beta * u, guess=g_theta) - g_theta) / beta * u`: Estimates the directional
+      derivative of the boundary function `g` along the random direction `u` using finite differences.
+      Averaging these over `q` probes yields a zeroth-order approximation of the gradient.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `iters=14`: Number of optimization updates. Chosen to fit within query limitations of standard tests.
+    - `q=6`: Number of random directions probed per step. A small number to conserve queries (as each probe is a full binary search).
+    - `beta=0.02` (2%): The finite difference perturbation size. Small enough to remain a local derivative estimate,
+      but large enough to not get wiped out by numerical precision limits.
+    - `alpha=0.3` (30%): The learning rate (gradient descent step size) used to update the search direction theta.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    x_init : np.ndarray
+        Initial boundary point.
+    iters : int, default=14
+        Number of steps.
+    q : int, default=6
+        Number of directions to sample.
+    beta : float, default=0.02
+        Finite difference step.
+    alpha : float, default=0.3
+        Learning rate.
+
+    Returns:
+    --------
+    np.ndarray
+        The optimized adversarial image vector.
     """
     theta = (x_init - x0) / np.linalg.norm(x_init - x0)
     g_theta = g_dist(ctx, x0, y0, theta, guess=np.linalg.norm(x_init - x0))
@@ -296,12 +568,41 @@ def attack_sign_opt(ctx, x0, y0, x_init, iters=14, q=12, beta=0.02, alpha=0.3):
     """
     Sign-OPT Attack: A much faster version of the OPT attack.
     
-    Instead of performing a full, slow binary search (`g_dist`) for every random direction,
-    Sign-OPT asks a single yes/no question: "If I nudge my direction by a tiny amount,
-    am I still adversarial at the current distance?"
-    - If yes: the boundary distance in this direction must be smaller (this is a good direction, sign = +1).
-    - If no: the boundary distance in this direction is larger (this is a bad direction, sign = -1).
-    By using just the sign (+1 or -1) of the direction, it can estimate the gradient with way fewer queries.
+    Explanation of Math/Logic:
+    -------------------------
+    - `s = 1.0 if ctx.is_adv(x0 + g_theta * nt, y0) else -1.0`: Instead of measuring the exact boundary distance,
+      we check if nudging the direction unit vector keeps the image adversarial (+1) or makes it clean (-1).
+      This sign acts as a binary indicator, and the average `s * u` estimates the gradient direction with a single query per direction.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `q=12`: We probe 12 random directions. Since each direction only costs 1 query (instead of ~7 queries for a full binary search),
+      we can afford to double the directions probed compared to OPT (`q=6`) to get a more accurate gradient, while still using 70% fewer queries!
+    - Other parameters (`beta=0.02`, `alpha=0.3`, `iters=14`) match OPT's default tuning to maintain stable convergence properties.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image vector.
+    y0 : int
+        The correct label index.
+    x_init : np.ndarray
+        Initial boundary point.
+    iters : int, default=14
+        Number of steps.
+    q : int, default=12
+        Number of sign directions to sample.
+    beta : float, default=0.02
+        Direction nudge scale.
+    alpha : float, default=0.3
+        Learning rate.
+
+    Returns:
+    --------
+    np.ndarray
+        The optimized adversarial image vector.
     """
     theta = (x_init - x0) / np.linalg.norm(x_init - x0)
     g_theta = g_dist(ctx, x0, y0, theta, guess=np.linalg.norm(x_init - x0))
@@ -333,13 +634,37 @@ def mc_normal(ctx, x_b, y0, B=20, delta=0.01):
     """
     Estimates the boundary normal direction using a Monte Carlo (sampling) approach.
     
-    Imagine standing right on the boundary. We want to know which direction is perpendicular to the boundary line.
-    We do this by:
-    1. Scattering `B` random directions around us.
-    2. For each direction, we step a tiny amount (`delta`) and check if we are still adversarial (yes/no).
-    3. We take a weighted average of these directions (where directions that remained adversarial get positive weight,
-       and directions that became correct get negative weight).
-    The average direction points directly perpendicular (normal) to the boundary.
+    Explanation of Math/Logic:
+    -------------------------
+    - `phi[:, None] * U`: Weights each random direction row in `U` by its classification sign `phi` (+1 or -1).
+      The average vector `g` will point in the direction where the space is adversarial.
+      Since the current point `x_b` lies exactly on the boundary, this average vector points directly perpendicular
+      (normal) to the boundary plane.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `B=20`: Number of random sample directions (Monte Carlo probes). 20 probes provide a solid balance between
+      query count and high directional accuracy in normal estimation.
+    - `delta=0.01` (1%): The size of the Monte Carlo probe step. It must be small enough to stay in the local
+      vicinity of the boundary point to represent a true local mathematical normal.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x_b : np.ndarray
+        The current boundary image vector.
+    y0 : int
+        The correct label index.
+    B : int, default=20
+        Number of probes.
+    delta : float, default=0.01
+        Probe step scale.
+
+    Returns:
+    --------
+    np.ndarray
+        The estimated boundary normal direction unit vector.
     """
     U = ctx.rng.standard_normal((B, x_b.size)); U /= np.linalg.norm(U, axis=1, keepdims=True)
     # Check each random probe direction
@@ -353,9 +678,30 @@ def step_and_project(ctx, x_b, x0, y0, v, xi, best_d):
     """
     Takes a step along the direction `v` (into the adversarial region),
     and then binary searches back to find the new boundary point.
-    
-    If the step size `xi` is too large and fails to be adversarial, we reject the step.
-    Returns: (new boundary point, new distance, success flag)
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x_b : np.ndarray
+        Current boundary point.
+    x0 : np.ndarray
+        Clean target image vector.
+    y0 : int
+        Correct label index.
+    v : np.ndarray
+        Search direction vector.
+    xi : float
+        Step size.
+    best_d : float
+        The current best L2 distance.
+
+    Returns:
+    --------
+    tuple (np.ndarray, float, bool)
+        - The updated boundary point.
+        - The new L2 distance to x0.
+        - True if the step was accepted, False if rejected (not adversarial).
     """
     x_step = ctx.clip(x_b + xi * v)
     if not ctx.is_adv(x_step, y0):
@@ -370,8 +716,36 @@ def attack_hsj(ctx, x0, y0, x_init, iters=15, B=20):
     """
     HopSkipJump Attack: Repeats the process of estimating the normal vector and stepping/projecting.
     
-    This is one of the strongest pure black-box attacks, but it is query-heavy because we have to
-    estimate the normal direction by probing the model `B` times at every single step.
+    Explanation of Math/Logic:
+    -------------------------
+    - `best_d / np.sqrt(t + 1)`: The step size `xi` dynamically decays as iterations progress.
+      As we converge closer to the target image `x0`, the decision boundary becomes more curved,
+      so we must take smaller steps to avoid overshooting or stepping out of bounds.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `iters=15` and `B=20`: HSJ defaults that ensure we get a highly optimized perturbation within a total budget
+      of around 300 to 500 queries.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image.
+    y0 : int
+        The correct label.
+    x_init : np.ndarray
+        The initial boundary starting point.
+    iters : int, default=15
+        Number of update iterations.
+    B : int, default=20
+        Monte Carlo sample size.
+
+    Returns:
+    --------
+    np.ndarray
+        The optimized adversarial image vector.
     """
     x_b = x_init.copy(); best, best_d = x_b, np.linalg.norm(x_b - x0)
     for t in range(iters):
@@ -391,22 +765,48 @@ def attack_triangle(ctx, x0, y0, x_init, iters=40, N=2):
     """
     Triangle Attack (Wang et al., ECCV 2022):
     
-    A highly query-efficient decision-based attack that does NOT require estimating gradients.
-    Instead, it uses the geometric properties of a triangle (the law of sines) to guide the search.
-    It operates in the low-frequency DCT (Discrete Cosine Transform) subspace to perform effective
-    dimensionality reduction.
-    
-    Explanation for Beginners:
-    Imagine we want to find a path that gets our adversarial image as close to the original image as possible.
-    At each step:
-    1. We define a 2D plane (subspace) spanned by:
-       - The vector from the original image to our current adversarial image.
-       - A random direction in the low-frequency space (since low-frequency changes are more natural and effective).
-    2. In this 2D plane, the original image, current adversarial image, and a new candidate image form a triangle.
-    3. According to the "Law of Sines", the side lengths of a triangle depend on its angles.
-       By carefully choosing the angles (alpha and beta), we can guarantee that the new candidate is closer to the original image.
-    4. We adjust the search angle alpha adaptively: if we successfully find an adversarial candidate, we make the search harder
-       (larger alpha) to get a smaller perturbation. If we fail, we make it easier (smaller alpha).
+    Explanation of Math/Logic:
+    -------------------------
+    - `dct` / `idct`: Discrete Cosine Transform. Projects spatial pixel representations into the frequency domain.
+    - `v_dir = v_spatial - (v_spatial @ u_dir) * u_dir`: Standard Gram-Schmidt orthogonalization.
+      Ensures the random direction vector `v_dir` is mathematically perpendicular to `u_dir` (the vector to `x0`).
+    - `delta_t * np.sin(alpha + beta) / sin_alpha`: The Law of Sines formula. In the 2D plane, if we form a triangle
+      with vertices `x0`, `x_t` and `x_{t+1}`, this formula calculates the new distance `delta_{t+1}`.
+      By keeping `alpha` close to 90 degrees and choosing a small `beta`, it guarantees `delta_{t+1} < delta_t`.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `iters=40`: Number of updates. Since Triangle Attack uses only 2 queries per step (extreme efficiency),
+      we can afford 40 updates while spending fewer than 100 queries overall!
+    - `N=2`: Number of binary search iterations to find optimal `beta`. 2 iterations are sufficient to get a good step.
+    - `0.10 * D` (L): Low-frequency range (10% of total dimensions). Higher frequencies represent rapid, noisy pixel transitions,
+      whereas low frequencies represent smooth changes. Restricting changes to low frequencies yields much more natural,
+      hard-to-detect adversarial perturbations.
+    - `alpha = np.pi / 2` (90 degrees): The initial search vertex angle.
+    - `gamma = 0.01` & `lamb = 0.05` & `tau = 0.1`: Geometric scaling hyperparameters tuned by the paper authors to ensure
+      stable angle updates.
+    - `d = 3`: Number of random frequency components modified at a time to keep updates localized.
+    - `beta_limit = np.pi / 16` (11.25 degrees): Prevents the search angle from collapsing to zero (which would yield no progress).
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image.
+    y0 : int
+        The correct label.
+    x_init : np.ndarray
+        Initial boundary point.
+    iters : int, default=40
+        Number of steps.
+    N : int, default=2
+        Number of search iterations for beta.
+
+    Returns:
+    --------
+    np.ndarray
+        The optimized adversarial image vector.
     """
     from scipy.fftpack import dct, idct
     
@@ -529,10 +929,33 @@ def attack_sqba(ctx, x0, y0, x_init, iters=15):
     """
     A simplified "teaching" version of SQBA.
     
-    It tries using the surrogate's gradient as the step direction.
-    If the step succeeds, we accept it (0 queries spent estimating).
-    If it fails, we fall back to HopSkipJump's query-based normal estimation (`mc_normal`).
-    If our surrogate is completely useless, SQBA automatically behaves like HopSkipJump.
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `1e-3`: A small improvement threshold. If the surrogate step does not improve the L2 distance
+      by at least 0.001, we reject it and execute the Monte Carlo fallback.
+    - `delta = 1e-2 * best_d` (1% of distance): The scale of Monte Carlo probes used in the fallback.
+      Dynamically scales down as we get closer to `x0`.
+    - `iters=15`: The default iterations for direct comparison against HopSkipJump.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image.
+    y0 : int
+        The correct label index.
+    x_init : np.ndarray
+        Initial boundary point.
+    iters : int, default=15
+        Number of steps.
+
+    Returns:
+    --------
+    tuple (np.ndarray, int, int)
+        - The optimized adversarial image.
+        - Number of successful surrogate (white-box) steps.
+        - Number of query-based Monte Carlo fallback steps.
     """
     x_b = x_init.copy(); best, best_d = x_b, np.linalg.norm(x_b - x0)
     white_iters, fallbacks = 0, 0
@@ -560,12 +983,36 @@ def grad_hw_multigrad(ctx, x0, y0, x_b, delta, n=5):
     """
     The Multi-Gradient method (from Section 4.1 of the SQBA paper).
     
-    As we move from the clean image to the boundary, the gradient directions of the surrogate
-    rotate. To find the most effective direction, this function:
-    1. Samples the surrogate's gradient at `n` different points along the path.
-    2. Tests each candidate gradient direction with a tiny probe.
-    3. Keeps the candidate direction that stays adversarial and gets us closest to the original image.
-    This costs `n` queries to the victim but finds a much better direction in high-dimensional spaces.
+    Explanation of Math/Logic:
+    -------------------------
+    - `np.linspace(0.2, 1.0, n)`: Probes the surrogate's gradient at multiple points along the path
+      connecting the clean image `x0` and the boundary `x_b` (at 20%, 40%, 60%, 80%, and 100% of the segment).
+      This handles gradient rotation in high-dimensional spaces to find the direction that stays adversarial the longest.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `n=5`: Number of path samples. Proving 5 points balances query efficiency with directional stability.
+    - `2 * delta`: A small testing step size to check if a candidate gradient direction `mu` is adversarial.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image.
+    y0 : int
+        The correct label index.
+    x_b : np.ndarray
+        The current boundary point.
+    delta : float
+        Nudge step size.
+    n : int, default=5
+        Number of multi-gradient samples.
+
+    Returns:
+    --------
+    np.ndarray
+        The selected optimal normalized surrogate gradient vector.
     """
     v_tilde = x_b - x0
     best_mu, best_d = None, np.inf
@@ -588,7 +1035,30 @@ def grad_hw_multigrad(ctx, x0, y0, x_b, delta, n=5):
 def grad_hb_mc(ctx, x_b, y0, delta, t):
     """
     Estimates the victim's boundary normal using the Monte Carlo method (similar to HopSkipJump).
-    It adjusts the number of random directions it tries based on the current step number `t`.
+
+    Explanation of Math/Hardcoded Numbers:
+    --------------------------------------
+    - `int(np.ceil(10 * np.sqrt(t + 1)))`: Dynamic probe size `p_t`. As iteration `t` increases, the search
+      gets closer to `x0` and the boundary details get finer. To maintain high accuracy, we increase the number
+      of Monte Carlo directions probed dynamically over time.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x_b : np.ndarray
+        Current boundary point.
+    y0 : int
+        Correct label.
+    delta : float
+        Probe step size.
+    t : int
+        The current iteration number.
+
+    Returns:
+    --------
+    np.ndarray
+        The estimated normal unit vector.
     """
     p_t = int(np.ceil(10 * np.sqrt(t + 1)))
     U = ctx.rng.standard_normal((p_t, x_b.size))
@@ -601,9 +1071,34 @@ def eq8_eq9_update(ctx, x_b, x0, y0, g, alpha_cap=1.0):
     """
     Updates the boundary point along direction `g` (Equations 8 and 9 in the paper).
     
-    1. Line Search (Eq 8): Finds the largest step size `alpha` that keeps the point adversarial.
-       We start with a guess and halve it up to 6 times until we find an adversarial point.
-    2. Projection (Eq 9): Performs a binary search from that point back to the boundary.
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `6`: Number of line search halving attempts. If we cannot find an adversarial step after halving the
+      learning rate 6 times (shrunk to 1/64 of the original size), we reject the update to save queries and prevent oscillations.
+    - `0.5`: The halving factor to shrink step sizes.
+    - `1e-3`: Minimum distance threshold.
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x_b : np.ndarray
+        Current boundary point.
+    x0 : np.ndarray
+        Clean target image.
+    y0 : int
+        Correct label.
+    g : np.ndarray
+        Search direction.
+    alpha_cap : float, default=1.0
+        Maximum allowed step cap.
+
+    Returns:
+    --------
+    tuple (np.ndarray, float, float)
+        - The updated boundary image vector.
+        - The new L2 distance to x0.
+        - The actual step size (alpha) successfully used.
     """
     a = min(alpha_cap, max(np.linalg.norm(x_b - x0), 1e-3))
     x_dot, used = x_b, 0.0
@@ -623,12 +1118,36 @@ def attack_sqba_full(ctx, x0, y0, iters=15):
     """
     The full, paper-faithful implementation of SQBA (Algorithm 1 from the WACV 2024 paper).
     
-    It uses:
-    1. A custom initialization: starting from the sign of the surrogate gradient.
-    2. A boolean "beta switch" (Eq 7):
-       - If beta = 1: we trust our surrogate and use the Multi-Gradient method.
-       - If beta = 0: we are stuck, so we fall back to the Monte Carlo estimate.
-       - We switch beta to 0 if the step size used was too small, or if we didn't improve.
+    Explanation of Math/Logic:
+    -------------------------
+    - **Beta Switch**: $\beta$ controls whether we use the free surrogate gradient ($\beta=1$) or run query-heavy
+      Monte Carlo normal probing ($\beta=0$). If the surrogate gradient fails to yield a successful step, we switch
+      $\beta$ to 0 to rely on queries. Once a query-based step succeeds, we switch $\beta$ back to 1 to try the surrogate again.
+    - `np.sign(ctx.sgrad(x0, y0))`: Custom initialization. Stepping along the sign (+1 or -1) of the surrogate gradient at the clean image.
+
+    Explanation of Hardcoded Numbers:
+    ---------------------------------
+    - `1e-4` (improvement threshold): If the update doesn't reduce the L2 distance by at least 0.0001, we consider the update a failure.
+    - `0.25`: The step size threshold. If the line search was forced to shrink the step size below 25% of the distance,
+      the surrogate's geometry is unaligned, triggering the Beta Switch (`beta = 0`).
+
+    Parameters:
+    -----------
+    ctx : Ctx
+        The attack context object.
+    x0 : np.ndarray
+        The clean target image.
+    y0 : int
+        The correct label index.
+    iters : int, default=15
+        Number of steps.
+
+    Returns:
+    --------
+    tuple (np.ndarray, int, int)
+        - The optimized adversarial image.
+        - Number of successful surrogate steps.
+        - Number of query-based Monte Carlo steps.
     """
     # Initialize using the sign (+1 or -1) of the surrogate gradient
     x_adv = ctx.clip(x0 + np.sign(ctx.sgrad(x0, y0)))   
