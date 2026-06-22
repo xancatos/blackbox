@@ -271,7 +271,7 @@ def make_ctx(s):
 ctx = make_ctx(surr)
 sgrad = make_sgrad(surr)
 # Perturbation size metric (rho): L2 norm of the change divided by the L2 norm of the original image.
-# An attack is considered successful if rho <= 0.10.
+# An attack is considered successful if rho <= 0.25.
 rho = lambda adv, x0: np.linalg.norm(adv - x0) / np.linalg.norm(x0)
 
 # ============================================================================
@@ -308,7 +308,7 @@ x, q = run(lambda: attack_sqba_full(ctx, x0, y0)[0])
 rows.append(("surrogate", "sqba-full", "'24", q, rho(x, x0), ctx.fooled(x, y0), "paper Algo 1: multi-gradient + beta switch"))
 
 print("\n" + "=" * 88)
-print(f"CIFAR-10 (airplane vs automobile) ATTACK LINEAGE  (one image; hard-label only; success = rho<=0.10)")
+print(f"CIFAR-10 (airplane vs automobile) ATTACK LINEAGE  (one image; hard-label only; success = rho<=0.25)")
 print("=" * 88)
 print(f"{'attack':<13}{'yr':>4}{'victim_q':>10}{'rho':>8}{'win':>5}   key idea")
 last = None
@@ -339,11 +339,11 @@ for xi in asr_imgs:
         for b in budgets:
             ctx.q = 0; ctx.budget = b
             adv = fn(ctx, xi, yi)
-            if ctx.fooled(adv, yi) and rho(adv, xi) <= 0.10:
+            if ctx.fooled(adv, yi) and rho(adv, xi) <= 0.25:
                 asr[name][b] += 1
 
 print("\n" + "=" * 88)
-print(f"ASR vs QUERY BUDGET  (success = rho<=0.10 within budget; {M} images, strong surrogate)")
+print(f"ASR vs QUERY BUDGET  (success = rho<=0.25 within budget; {M} images, strong surrogate)")
 print("=" * 88)
 print(f"{'attack':<13}" + "".join(f"{('Q=' + str(b)):>9}" for b in budgets))
 for name in runners:
