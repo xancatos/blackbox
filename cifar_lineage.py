@@ -260,8 +260,8 @@ def attack_transfer(ctx, x0, y0, sgrad):
 # ============================================================================
 print("training tiny CNNs (cached after first run) ...")
 victim = train_net(VictimNet(), Xtr, ytr, epochs=12, seed=0, tag="victim_air_auto")
-# White-box replica surrogate (attacker trains identical architecture on same dataset)
-surr_wb = train_net(VictimNet(), Xtr, ytr, epochs=12, seed=42, tag="surr_wb_air_auto")
+# White-box replica surrogate (using the exact same seed and weights as the victim model to represent full parameter access)
+surr_wb = train_net(VictimNet(), Xtr, ytr, epochs=12, seed=0, tag="victim_air_auto")
 # Black-box generic surrogate (attacker has generic external helper model)
 surr = build_surrogate(tag="surr_strong_air_auto")
 
