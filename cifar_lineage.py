@@ -301,11 +301,17 @@ plan = [
 rows = []
 for tier, name, year, idea, fn in plan:
     x, q = run(fn)
-    rows.append((tier, name, year, q, rho(x, x0), ctx.fooled(x, y0), idea))
+    r_val = rho(x, x0)
+    win_val = ctx.fooled(x, y0) and r_val <= 0.25
+    rows.append((tier, name, year, q, r_val, win_val, idea))
 x, q = run(lambda: attack_sqba(ctx, x0, y0, loose)[0])
-rows.append(("surrogate", "sqba", "'24", q, rho(x, x0), ctx.fooled(x, y0), "teaching: single surrogate normal + fallback"))
+r_val = rho(x, x0)
+win_val = ctx.fooled(x, y0) and r_val <= 0.25
+rows.append(("surrogate", "sqba", "'24", q, r_val, win_val, "teaching: single surrogate normal + fallback"))
 x, q = run(lambda: attack_sqba_full(ctx, x0, y0)[0])
-rows.append(("surrogate", "sqba-full", "'24", q, rho(x, x0), ctx.fooled(x, y0), "paper Algo 1: multi-gradient + beta switch"))
+r_val = rho(x, x0)
+win_val = ctx.fooled(x, y0) and r_val <= 0.25
+rows.append(("surrogate", "sqba-full", "'24", q, r_val, win_val, "paper Algo 1: multi-gradient + beta switch"))
 
 print("\n" + "=" * 88)
 print(f"CIFAR-10 (airplane vs automobile) ATTACK LINEAGE  (one image; hard-label only; success = rho<=0.25)")
