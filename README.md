@@ -23,6 +23,11 @@ data-agnostic), driven by two demos:
 ```bash
 uv run lineage.py          # digits — fast, numpy + scikit-learn only
 uv run cifar_lineage.py    # CIFAR-10 — first run downloads ~170 MB data + CPU torch
+uv run diagrams/render_all.py   # regenerate the dark-theme slide diagrams (see diagrams/)
+
+# run the visual tutorial notebook end-to-end:
+uv run --with numpy,torch,scipy,matplotlib,lpips,jupyter,nbconvert,ipykernel \
+  jupyter nbconvert --to notebook --execute --inplace lineage_tutorial.ipynb
 ```
 
 [`uv`](https://docs.astral.sh/uv/) reads the PEP-723 header in each script and
