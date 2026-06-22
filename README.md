@@ -111,11 +111,11 @@ Perturbation is the paper's relative budget `ρ = ‖x_adv − x‖ / ‖x‖`, 
 ```
 ASR vs QUERY BUDGET  (success = rho<=0.25 within budget; 8 images, strong surrogate)
 attack           Q=100    Q=250   Q=1000
-hopskipjump        12%      25%      50%
-sign-opt           12%      12%      38%
 boundary           12%      12%      12%
+sign-opt           12%      12%      62%
+hopskipjump        25%      25%      38%
+triangle           38%      62%      88%
 biased-bdry       100%     100%     100%
-triangle           12%      50%      75%
 sqba              100%     100%     100%
 sqba-full          75%     100%     100%
 ```
@@ -124,7 +124,7 @@ This **reproduces the paper's central result**: at small budgets (100, 250) the
 surrogate-assisted attacks reach ~100% ASR while the pure query-based methods
 (HopSkipJump, Sign-OPT) are stuck at 12–25%. Crucially, the pure black-box
 **Triangle Attack** outperforms other non-surrogate decision attacks by a massive margin
-(50% ASR at Q=250, and 75% ASR at Q=1000) by utilizing its low-frequency DCT subspace search.
+(62% ASR at Q=250, and 88% ASR at Q=1000) by utilizing its low-frequency DCT subspace search.
 
 ## The weaken-surrogate knob
 
@@ -171,7 +171,7 @@ and the [Triangle Attack paper](https://arxiv.org/abs/2112.06569).
 
 **What matches:**
 - SQBA = transfer + query-based, hard-label, built on **HopSkipJump's** gradient estimation.
-- The Triangle Attack combines the law of sines with Discrete Cosine Transform (DCT) to sample 2D subspaces. In [attacks.py](./attacks.py), [attack_triangle](./attacks.py#L261) implements the low-frequency sampling, Law of Sines candidate calculation, and binary search steps exactly matching Algorithm 1.
+- The Triangle Attack combines the law of sines with Discrete Cosine Transform (DCT) to sample 2D subspaces. In [attacks.py](./attacks.py), [attack_triangle](./attacks.py#L764) implements the low-frequency sampling, Law of Sines candidate calculation, and binary search steps exactly matching Algorithm 1.
 
 ## Honest caveats
 

@@ -26,7 +26,7 @@ If you are new to machine learning, here is what this is about:
      for the direction of the quickest change.
    - `ctx.lo` and `ctx.hi`: The minimum and maximum pixel values allowed (like 0.0 for black and 1.0 for white).
 
-This file is shared. It is used by `lineage.py` (which attacks a simple text/digits classifier)
+This file is shared. It is used by `lineage.py` (which attacks a simple handwritten-digit classifier)
 and `cifar_lineage.py` (which attacks a convolutional neural network that classifies airplane vs automobile images).
 """
 import numpy as np
@@ -808,7 +808,7 @@ def attack_triangle(ctx, x0, y0, x_init, iters=40, N=2):
     np.ndarray
         The optimized adversarial image vector.
     """
-    from scipy.fftpack import dct, idct
+    from scipy.fftpack import idct
     
     D = x0.size
     x_adv = x_init.copy()
@@ -1128,8 +1128,8 @@ def attack_sqba_full(ctx, x0, y0, iters=15):
     Explanation of Hardcoded Numbers:
     ---------------------------------
     - `1e-4` (improvement threshold): If the update doesn't reduce the L2 distance by at least 0.0001, we consider the update a failure.
-    - `0.25`: The step size threshold. If the line search was forced to shrink the step size below 25% of the distance,
-      the surrogate's geometry is unaligned, triggering the Beta Switch (`beta = 0`).
+    - `0.25`: The step size threshold (an absolute bound on the accepted step `used_alpha`). If the line search was
+      forced to shrink the step below 0.25, the surrogate's geometry is unaligned, triggering the Beta Switch (`beta = 0`).
 
     Parameters:
     -----------
