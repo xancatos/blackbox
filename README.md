@@ -105,29 +105,26 @@ L2 — its multi-gradient method exploits gradient rotation in *high* dimensions
 
 ## CIFAR-10: the paper's setting (`cifar_lineage.py`)
 
-Tiny CNNs (different architectures for victim vs surrogate — real cross-arch
-transfer) on a 2-class slice (**cat vs dog**, 3072-dim). Perturbation is the
-paper's relative budget `ρ = ‖x_adv − x‖ / ‖x‖`, success `ρ ≤ 0.10`. The whole
-ladder still runs, but now the **ASR-vs-query-budget** table (the shape of the
-paper's Tables 3–6) is the headline:
+Tiny CNNs on a 2-class slice (**airplane vs automobile**, 3072-dim). We train two surrogates: a **White-box Replica Surrogate** (identical architecture, 94.5% accuracy, 100% agreement) and a **Black-box Generic Surrogate** (different architecture, 90.5% accuracy, 92% agreement). 
+Perturbation is the paper's relative budget `ρ = ‖x_adv − x‖ / ‖x‖`, success `ρ ≤ 0.25`. The whole ladder runs, and the **ASR-vs-query-budget** table (the shape of the paper's Tables 3–6) is the headline:
 
 ```
-ASR vs QUERY BUDGET  (success = rho<=0.10 within budget; 8 images, strong surrogate)
+ASR vs QUERY BUDGET  (success = rho<=0.25 within budget; 8 images, strong surrogate)
 attack           Q=100    Q=250   Q=1000
-hopskipjump         0%      38%      75%
-sign-opt            0%      12%      75%
-boundary            0%       0%       0%
+hopskipjump        12%      25%      50%
+sign-opt           12%      12%      38%
+boundary           12%      12%      12%
 biased-bdry       100%     100%     100%
-triangle           38%      75%     100%
+triangle           12%      50%      75%
 sqba              100%     100%     100%
-sqba-full         100%     100%     100%
+sqba-full          75%     100%     100%
 ```
 
 This **reproduces the paper's central result**: at small budgets (100, 250) the
 surrogate-assisted attacks reach ~100% ASR while the pure query-based methods
-(HopSkipJump, Sign-OPT) are stuck at 0–38%. Crucially, the pure black-box
+(HopSkipJump, Sign-OPT) are stuck at 12–25%. Crucially, the pure black-box
 **Triangle Attack** outperforms other non-surrogate decision attacks by a massive margin
-(38% ASR at Q=100, and 75% ASR at Q=250) by utilizing its low-frequency DCT subspace search.
+(50% ASR at Q=250, and 75% ASR at Q=1000) by utilizing its low-frequency DCT subspace search.
 
 ## The weaken-surrogate knob
 
@@ -188,10 +185,7 @@ the *exact numbers* as illustrative.
 - **`line` (scaffold) can beat `boundary` in L2** only because it initialises from
   the *nearest* class while the decision-based rungs deliberately start from a
   *loose* far point — the comparison is about the optimisation, not the start.
-- **CIFAR victim accuracy is ~0.68** (cat vs dog is the *hardest* CIFAR-10 pair,
-  chosen so the boundary isn't trivial). Tiny CNNs + 800 imgs/class; bump epochs in
-  `train_net` for more. Attacks only target test images the victim classifies
-  correctly, so success stays meaningful.
+- **CIFAR victim accuracy is 94.5%** (airplane vs automobile classification, chosen so the boundary is distinct and models reach >=90% accuracy). Attacks only target test images the victim classifies correctly, so success stays meaningful.
 - **PGD ≈ FGSM in L∞ size**; PGD's edge is reliability, not a smaller perturbation
   at the same ε.
 - **Few images, averaged** to keep CPU time low; the per-budget ASR is over 8

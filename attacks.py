@@ -6,14 +6,14 @@ Welcome! This file contains the "adversarial attacks" code.
 If you are new to machine learning, here is what this is about:
 1. What is an Adversarial Attack?
    Imagine we have a computer program (a "classifier" or "model") that looks at pictures
-   and guesses what they are (for example, "cat" or "dog"). An adversarial attack is a
-   way to make a tiny, almost invisible change to a picture of a cat so that the computer
-   guesses "dog" instead, even though it still looks like a cat to us.
+   and guesses what they are (for example, "airplane" or "automobile"). An adversarial attack is a
+   way to make a tiny, almost invisible change to a picture of an airplane so that the computer
+   guesses "automobile" instead, even though it still looks like an airplane to us.
 
 2. What is a "Black-Box" Attack?
    A black-box attack means we do not know how the model works on the inside. We cannot see
    its neural network layers, its mathematical formulas, or its confidence score. We can only
-   send it an image, and it returns a single word/label: "cat" or "dog" (this is called a "hard label").
+   send it an image, and it returns a single word/label: "airplane" or "automobile" (this is called a "hard label").
    Our goal is to fool this model using as few questions (or "queries") as possible, because querying
    a real model can be slow or expensive.
 
@@ -27,7 +27,7 @@ If you are new to machine learning, here is what this is about:
    - `ctx.lo` and `ctx.hi`: The minimum and maximum pixel values allowed (like 0.0 for black and 1.0 for white).
 
 This file is shared. It is used by `lineage.py` (which attacks a simple text/digits classifier)
-and `cifar_lineage.py` (which attacks a convolutional neural network that classifies cat vs dog images).
+and `cifar_lineage.py` (which attacks a convolutional neural network that classifies airplane vs automobile images).
 """
 import numpy as np
 
@@ -37,6 +37,17 @@ class Ctx:
     This class is the "Context" that wraps around our target model (the victim),
     our helper model (the surrogate), and our dataset. It helps us run and keep track
     of the attack.
+
+    Perceptual Guidance via Space Transformation (Weighted L2):
+    To implement weighted L2 guidance (e.g., hiding perturbations in textured regions),
+    we do not need to modify the internal Euclidean geometry of the attacks. Instead,
+    we can run the attacks in a transformed coordinate space:
+      z = W * x   ==>   x = z / W
+    By passing a prediction function `predict_z(z) = predict(z / W)` and gradient
+    `sgrad_z(z) = sgrad(z / W) / W` to Ctx, any standard L2 attack running inside Ctx
+    will naturally minimize the weighted L2 distance:
+      ||z - z0||_2 = ||W * (x - x0)||_2
+    The clipping bounds inside Ctx are scaled to `lo = 0.0` and `hi = W`.
     """
     def __init__(self, label_fn, sgrad_fn, pool_X, pool_y, rng, lo=0.0, hi=1.0):
         # `label_fn` is a function that asks the victim model for its guess (without counting it).
